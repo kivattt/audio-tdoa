@@ -2,8 +2,8 @@ In the tests folder, 2.wav is always shorter than 1.wav
 
 # Running the C thing
 ```
-gcc main.c
-./a.out
+./compile.sh
+./main
 ```
 
 # Running the Python thing
