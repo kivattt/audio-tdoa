@@ -2,6 +2,7 @@
 // We assume all audio files are 32 bit floating point raw data
 
 #include <stdio.h>
+#include <stdint.h>
 #include <assert.h>
 #include <math.h>
 #include <unistd.h>
@@ -11,9 +12,75 @@
 #include <string.h>
 #include <dirent.h>
 
+//#define DEBUGGING
+
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
 #define MAX(a,b) ((a) > (b) ? (a) : (b))
 
+void print_colored_symbol(float x) {
+	float red = 1.0 - x * 6;
+
+	red = pow(red, 1.0 / 2.2);
+	red = MIN(1.0, MAX(0.0, red));
+
+	uint8_t r = 255.0 * red;
+	printf("\x1b[48;2;%i;%i;%imX\x1b[0m", r, 0, 0);
+}
+
+// Mark zero-crossings
+float find_offset_4(float *audio_1, size_t audio_1_samplecount, float *audio_2, size_t audio_2_samplecount) {
+	float *out = malloc(audio_1_samplecount * sizeof(float));
+	out[0] = 0.0;
+
+	float last_sample = audio_1[0];
+	for (int i = 1; i < audio_1_samplecount; i++) {
+		float sample = audio_1[i];
+
+		float output = 0;
+		if (last_sample > 0) {
+			if (sample <= 0) {
+				output = 0.5;
+			}
+		} else if (last_sample < 0) {
+			if (sample >= 0) {
+				output = 0.5;
+			}
+		}
+
+		out[i] = output;
+		last_sample = sample;
+	}
+
+	for (int i = 0; i < audio_1_samplecount; i++) {
+		write(1, &out[i], sizeof(float));
+	}
+
+	free(out);
+	return 0.0;
+}
+
+// Sum abs(a+b) (bad!)
+float find_offset_3(float *audio_1, size_t audio_1_samplecount, float *audio_2, size_t audio_2_samplecount) {
+	float *out = malloc(audio_1_samplecount * sizeof(float));
+
+#pragma omp parallel for
+	for (int i = 0; i < audio_1_samplecount - audio_2_samplecount; i++) {
+		float sum = 0;
+		for (int j = 0; j < audio_2_samplecount; j++) {
+			sum += fabs(audio_1[i+j] + audio_2[j]);
+		}
+		out[i] = sum;
+	}
+
+	for (int i = 0; i < audio_1_samplecount; i++) {
+		write(1, &out[i], sizeof(float));
+	}
+
+	free(out);
+	return 0.0;
+}
+
+// Wrong implementation of TDOA algorithm
 float find_offset_2(float *audio_1, size_t audio_1_samplecount, float *audio_2, size_t audio_2_samplecount) {
 	assert(audio_2_samplecount < audio_1_samplecount);
 
@@ -35,8 +102,9 @@ float find_offset_2(float *audio_1, size_t audio_1_samplecount, float *audio_2, 
 		}
 
 		for (int y = 0; y < audio_2_samplecount; y += scale2) {
-			last_idx = MAX(last_idx, y);
-			for (int x = 0; x < audio_2_samplecount - y; x += scale2) {
+			//last_idx = MAX(last_idx, y);
+			last_idx = MAX(last_idx, y / scale2);
+			for (int x = 0; x < audio_2_samplecount/* - y*/; x += scale2) {
 				float diff = fabs(audio_1[y + offset] - audio_2[x + y]);
 
 				float min = INFINITY;
@@ -48,10 +116,20 @@ float find_offset_2(float *audio_1, size_t audio_1_samplecount, float *audio_2, 
 
 				if (min == INFINITY) min = 0;
 
-				current_row[x] = diff + min;
+				current_row[x / scale2] = diff + min;
 			}
 
 			memcpy(prev_row, current_row, buf_size);
+
+			// Print current_row
+#ifdef DEBUGGING
+			for (int i = 0; i < audio_2_samplecount / scale2; i += (audio_2_samplecount / scale2) / 100) {
+				print_colored_symbol(current_row[i]);
+				//printf("%f, ", current_row[i]);
+			}
+			printf("\n");
+			fflush(stdout);
+#endif
 		}
 
 		//float ans = current_row[audio_2_samplecount - 1];
@@ -76,6 +154,7 @@ float find_offset_2(float *audio_1, size_t audio_1_samplecount, float *audio_2, 
 	return 0.0;
 }
 
+// Sum multiply
 float find_offset(float *audio_1, size_t audio_1_samplecount, float *audio_2, size_t audio_2_samplecount) {
 	float *out = malloc(audio_1_samplecount * sizeof(float));
 
@@ -127,11 +206,14 @@ float find_offset_in_files(char *path_1, char *path_2) {
 	read(fd, file_2_data, file_2_size);
 
 	//return find_offset(file_1_data, file_1_size / sizeof(float), file_2_data, file_2_size / sizeof(float));
-	return find_offset_2(file_1_data, file_1_size / sizeof(float), file_2_data, file_2_size / sizeof(float));
+	//return find_offset_2(file_1_data, file_1_size / sizeof(float), file_2_data, file_2_size / sizeof(float));
+	//return find_offset_3(file_1_data, file_1_size / sizeof(float), file_2_data, file_2_size / sizeof(float));
+	return find_offset_4(file_1_data, file_1_size / sizeof(float), file_2_data, file_2_size / sizeof(float));
 }
 
 int main() {
-	find_offset_in_files("tests/orig_piano_pc/1.raw", "tests/orig_piano_pc/2.raw");
+	//find_offset_in_files("tests/orig_piano_pc/1.raw", "tests/orig_piano_pc/2.raw");
+	find_offset_in_files("tests/orig_piano_pc/2.raw", "tests/orig_piano_pc/1.raw");
 	return 0;
 
 	DIR *dir;
