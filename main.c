@@ -17,6 +17,8 @@
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
 #define MAX(a,b) ((a) > (b) ? (a) : (b))
 
+typedef size_t (*Algorithm)(float*, size_t, float*, size_t);
+
 void print_colored_symbol(float x) {
 	float red = 1.0 - x * 6;
 
@@ -25,6 +27,22 @@ void print_colored_symbol(float x) {
 
 	uint8_t r = 255.0 * red;
 	printf("\x1b[48;2;%i;%i;%imX\x1b[0m", r, 0, 0);
+}
+
+// Returns the first highest absolute peak
+size_t find_abs_peak_index(float *audio, size_t sample_count) {
+	float highest = 0;
+	size_t out = 0;
+
+	for (int i = 0; i < sample_count; i++) {
+		float sample = fabs(audio[i]);
+		if (sample > highest) {
+			out = i;
+			highest = sample;
+		}
+	}
+
+	return out;
 }
 
 void compute_hpf(float *audio, size_t sample_count, float cutoff_hertz, int sample_rate) {
@@ -81,10 +99,10 @@ float compute_weird_sum(float *audio_1, size_t audio_1_sample_count, float *audi
 
 	float sum = 0;
 	for (int i = 0; i < audio_1_sample_count; i++) {
-		sum += audio_1[i] * audio_2[i];
-		/*if ((audio_1[i] != 0) && audio_1[i] == audio_2[i]) {
+		//sum += audio_1[i] * audio_2[i];
+		if ((audio_1[i] != 0) && audio_1[i] == audio_2[i]) {
 			sum += 1.0;
-		}*/
+		}
 	}
 	return fabs(sum);
 }
@@ -102,158 +120,132 @@ void compute_auto_scale(float *audio, size_t sample_count) {
 	}
 }
 
-// Mark zero-crossings
-float find_offset_4(float *audio_1, size_t audio_1_sample_count, float *audio_2, size_t audio_2_sample_count) {
+size_t find_offset_zero_crossings(float *audio_1, size_t audio_1_sample_count, float *audio_2, size_t audio_2_sample_count) {
 	compute_hpf(audio_1, audio_1_sample_count, 20 /* cutoff in hertz */, 48000 /* sample rate */);
 	compute_hpf(audio_2, audio_2_sample_count, 20 /* cutoff in hertz */, 48000 /* sample rate */);
 	float *zero_crossings_1 = compute_zero_crossings(audio_1, audio_1_sample_count);
 	float *zero_crossings_2 = compute_zero_crossings(audio_2, audio_2_sample_count);
-	compute_lpf(zero_crossings_1, audio_1_sample_count, 5, 48000);
-	compute_lpf(zero_crossings_2, audio_2_sample_count, 5, 48000);
+	//compute_lpf(zero_crossings_1, audio_1_sample_count, 5, 48000);
+	//compute_lpf(zero_crossings_2, audio_2_sample_count, 5, 48000);
 
 	float *out = malloc(audio_1_sample_count * sizeof(float));
+#pragma omp parallel for
 	for (int i = 0; i < audio_1_sample_count - audio_2_sample_count; i++) {
-		fprintf(stderr, "at index %i of %zu\n", i, audio_1_sample_count - audio_2_sample_count);
 		out[i] = compute_weird_sum(&zero_crossings_1[i], audio_2_sample_count, zero_crossings_2, audio_2_sample_count);
 	}
 
+#ifdef DEBUGGING
 	compute_auto_scale(out, audio_1_sample_count - audio_2_sample_count);
 	for (int i = 0; i < audio_1_sample_count; i++) {
 		int _ = write(1, &out[i], sizeof(float));
 	}
+#endif
 
 	free(zero_crossings_1);
 	free(zero_crossings_2);
+	size_t index = find_abs_peak_index(out, audio_1_sample_count);
 	free(out);
-	return 0.0;
+	return index;
 }
 
-// Sum abs(a+b) (bad!)
-float find_offset_3(float *audio_1, size_t audio_1_samplecount, float *audio_2, size_t audio_2_samplecount) {
-	float *out = malloc(audio_1_samplecount * sizeof(float));
+size_t find_offset_correlation(float *audio_1, size_t audio_1_sample_count, float *audio_2, size_t audio_2_sample_count) {
+	float *out = malloc(audio_1_sample_count * sizeof(float));
 
 #pragma omp parallel for
-	for (int i = 0; i < audio_1_samplecount - audio_2_samplecount; i++) {
+	for (int i = 0; i < audio_1_sample_count - audio_2_sample_count; i++) {
 		float sum = 0;
-		for (int j = 0; j < audio_2_samplecount; j++) {
-			sum += fabs(audio_1[i+j] + audio_2[j]);
+		for (int j = 0; j < audio_2_sample_count; j++) {
+			sum += audio_1[i+j] * audio_2[j];
 		}
 		out[i] = sum;
 	}
 
-	for (int i = 0; i < audio_1_samplecount; i++) {
-		int _ = write(1, &out[i], sizeof(float));
-	}
-
+	size_t index = find_abs_peak_index(out, audio_1_sample_count - audio_2_sample_count);
 	free(out);
-	return 0.0;
+	return index;
 }
 
-// Wrong implementation of TDOA algorithm
-float find_offset_2(float *audio_1, size_t audio_1_samplecount, float *audio_2, size_t audio_2_samplecount) {
-	assert(audio_2_samplecount < audio_1_samplecount);
+size_t find_offset_correlation_hpf(float *audio_1, size_t audio_1_sample_count, float *audio_2, size_t audio_2_sample_count) {
+	float *out = malloc(audio_1_sample_count * sizeof(float));
+	compute_hpf(audio_1, audio_1_sample_count, 20, 48000);
+	compute_hpf(audio_2, audio_2_sample_count, 20, 48000);
+	compute_lpf(audio_1, audio_1_sample_count, 5, 48000);
+	compute_lpf(audio_2, audio_2_sample_count, 5, 48000);
 
-	size_t buf_size = audio_2_samplecount * sizeof(float);
-
-	float *current_row = malloc(buf_size);
-	float *prev_row = malloc(buf_size);
-
-	int scale = 2000;
-	int scale2 = 16;
-
-	float *output_correlation = malloc(audio_1_samplecount / scale * sizeof(float));
-
-	int last_idx = 0;
-
-	for (int offset = 0; offset < audio_1_samplecount - audio_2_samplecount; offset += scale) {
-		for (int i = 0; i < audio_2_samplecount; i++) {
-			prev_row[i] = INFINITY;
-		}
-
-		for (int y = 0; y < audio_2_samplecount; y += scale2) {
-			//last_idx = MAX(last_idx, y);
-			last_idx = MAX(last_idx, y / scale2);
-			for (int x = 0; x < audio_2_samplecount/* - y*/; x += scale2) {
-				float diff = fabs(audio_1[y + offset] - audio_2[x + y]);
-
-				float min = INFINITY;
-				min = MIN(min, prev_row[x]);
-				if (x-1 >= 0) {
-					min = MIN(min, current_row[x-1]);
-					min = MIN(min, prev_row[x-1]);
-				}
-
-				if (min == INFINITY) min = 0;
-
-				current_row[x / scale2] = diff + min;
-			}
-
-			memcpy(prev_row, current_row, buf_size);
-
-			// Print current_row
-#ifdef DEBUGGING
-			for (int i = 0; i < audio_2_samplecount / scale2; i += (audio_2_samplecount / scale2) / 100) {
-				print_colored_symbol(current_row[i]);
-				//printf("%f, ", current_row[i]);
-			}
-			printf("\n");
-			fflush(stdout);
-#endif
-		}
-
-		//float ans = current_row[audio_2_samplecount - 1];
-		float ans = current_row[last_idx];
-		output_correlation[offset / scale] = ans;
-
-		fprintf(stderr, "at offset %i / %zu, ans: %f\n", offset, audio_1_samplecount, ans);
-		fflush(stderr);
-	}
-
-	free(current_row);
-	free(prev_row);
-
-	for (int i = 0; i < audio_1_samplecount / scale; i++) {
-		for (int j = 0; j < scale; j++) {
-			int _ = write(1, &output_correlation[i], sizeof(float));
-		}
-	}
-
-	free(output_correlation);
-
-	return 0.0;
-}
-
-// Sum multiply
-float find_offset(float *audio_1, size_t audio_1_samplecount, float *audio_2, size_t audio_2_samplecount) {
-	float *out = malloc(audio_1_samplecount * sizeof(float));
-
-	float *window = malloc(audio_2_samplecount * sizeof(float));
-	for (int i = 0; i < audio_2_samplecount; i++) {
-		float x = 2.0 * i / audio_2_samplecount - 1.0;
-		window[i] = pow(M_E, -6 * x*x);
-	}
-
-//#pragma omp parallel for schedule(dynamic)
 #pragma omp parallel for
-	for (int i = 0; i < audio_1_samplecount - audio_2_samplecount; i++) {
+	for (int i = 0; i < audio_1_sample_count - audio_2_sample_count; i++) {
 		float sum = 0;
-		for (int j = 0; j < audio_2_samplecount; j++) {
-			sum += window[j] * audio_1[i+j] * audio_2[j];
+		for (int j = 0; j < audio_2_sample_count; j++) {
+			sum += audio_1[i+j] * audio_2[j];
 		}
-		out[i] = fabs(sum / 10.06);
+		out[i] = sum;
 	}
 
-	for (int i = 0; i < audio_1_samplecount; i++) {
-		int _ = write(1, &out[i], 4);
-	}
-	fflush(stdout);
-
-	free(window);
+	size_t index = find_abs_peak_index(out, audio_1_sample_count - audio_2_sample_count);
 	free(out);
-	return 0.0;
+	return index;
 }
 
-float find_offset_in_files(char *path_1, char *path_2) {
+float rms(float *audio, size_t sample_count) {
+	float out = 0;
+	for (int i = 0; i < sample_count; i++) {
+		out += fabs(audio[i] * audio[i]);
+	}
+	return sqrt(out / (float)sample_count);
+}
+
+size_t find_offset_correlation_volume_normalized(float *audio_1, size_t audio_1_sample_count, float *audio_2, size_t audio_2_sample_count) {
+	float *out = malloc(audio_1_sample_count * sizeof(float));
+
+	float audio_2_rms = rms(audio_2, audio_2_sample_count);
+
+#pragma omp parallel for
+	for (int i = 0; i < audio_1_sample_count - audio_2_sample_count; i++) {
+		float sum = 0;
+
+		float audio_1_rms = rms(&audio_1[i], audio_2_sample_count);
+		float gain = audio_2_rms / audio_1_rms;
+
+		for (int j = 0; j < audio_2_sample_count; j++) {
+			sum += (gain * audio_1[i+j]) * audio_2[j];
+		}
+		out[i] = sum;
+	}
+
+	size_t index = find_abs_peak_index(out, audio_1_sample_count - audio_2_sample_count);
+	free(out);
+	return index;
+}
+
+void compute_derivative(float *audio, size_t sample_count) {
+	float last_sample = audio[0];
+	for (int i = 1; i < sample_count; i++) {
+		float sample = audio[i];
+		audio[i] = sample - last_sample;
+		last_sample = sample;
+	}
+}
+
+size_t find_offset_correlation_on_derivatives(float *audio_1, size_t audio_1_sample_count, float *audio_2, size_t audio_2_sample_count) {
+	float *out = malloc(audio_1_sample_count * sizeof(float));
+	compute_derivative(audio_1, audio_1_sample_count);
+	compute_derivative(audio_2, audio_2_sample_count);
+
+#pragma omp parallel for
+	for (int i = 0; i < audio_1_sample_count - audio_2_sample_count; i++) {
+		float sum = 0;
+		for (int j = 0; j < audio_2_sample_count; j++) {
+			sum += audio_1[i+j] * audio_2[j];
+		}
+		out[i] = sum;
+	}
+
+	size_t index = find_abs_peak_index(out, audio_1_sample_count - audio_2_sample_count);
+	free(out);
+	return index;
+}
+
+size_t find_offset_in_files(char *path_1, char *path_2, size_t (*algorithm)(float*, size_t, float*, size_t)) {
 	//printf("find offset %s and %s\n", path_1, path_2);
 	fflush(stdout);
 
@@ -274,52 +266,59 @@ float find_offset_in_files(char *path_1, char *path_2) {
 	float *file_2_data = malloc(file_2_size);
 	_ = read(fd, file_2_data, file_2_size);
 
-	//return find_offset(file_1_data, file_1_size / sizeof(float), file_2_data, file_2_size / sizeof(float));
-	//return find_offset_2(file_1_data, file_1_size / sizeof(float), file_2_data, file_2_size / sizeof(float));
-	//return find_offset_3(file_1_data, file_1_size / sizeof(float), file_2_data, file_2_size / sizeof(float));
-	return find_offset_4(file_1_data, file_1_size / sizeof(float), file_2_data, file_2_size / sizeof(float));
+	return algorithm(file_1_data, file_1_size / sizeof(float), file_2_data, file_2_size / sizeof(float));
 }
 
 int main() {
-	find_offset_in_files("tests/orig_piano_pc/1.raw", "tests/orig_piano_pc/2.raw");
+	//find_offset_in_files("tests/orig_piano_pc/1.raw", "tests/orig_piano_pc/2.raw");
 	//find_offset_in_files("tests/orig_piano_pc/2.raw", "tests/orig_piano_pc/1.raw");
-	return 0;
+	//return 0;
 
-	DIR *dir;
-	struct dirent *entry;
-	char child[PATH_MAX];
+	Algorithm algos[] = {find_offset_correlation, find_offset_correlation_hpf, find_offset_correlation_volume_normalized, find_offset_correlation_on_derivatives, find_offset_zero_crossings};
+	int algos_len = sizeof(algos) / sizeof(algos[0]);
 
-	if (!(dir = opendir("tests"))) {
-		return 1;
-	}
+	char *algo_names[] = {"Correlation", "Correlation (HPF @ 20hz)", "Correlation (volume normalized)", "Correlation on derivatives", "Zero-crossings"};
 
-	// Iterate "tests" directory
-	while ((entry = readdir(dir)) != NULL) {
-		if (entry->d_name[0] == '.') {
-			continue;
+	for (int algo_idx = 0; algo_idx < algos_len; algo_idx++) {
+		printf("%s:\n", algo_names[algo_idx]);
+
+		DIR *dir;
+		struct dirent *entry;
+		char child[PATH_MAX];
+
+		if (!(dir = opendir("tests"))) {
+			return 1;
 		}
 
-		// Read "expected_offset_seconds.txt"
-		snprintf(child, PATH_MAX, "tests/%s/expected_offset_seconds.txt", entry->d_name);
-		int fd = open(child, O_RDONLY);
+		// Iterate "tests" directory
+		while ((entry = readdir(dir)) != NULL) {
+			if (entry->d_name[0] == '.') {
+				continue;
+			}
 
-		struct stat st;
-		if (fstat(fd, &st) == -1) {
-			return 2;
+			// Read "expected_offset_seconds.txt"
+			snprintf(child, PATH_MAX, "tests/%s/expected_offset_seconds.txt", entry->d_name);
+			int fd = open(child, O_RDONLY);
+
+			struct stat st;
+			if (fstat(fd, &st) == -1) {
+				return 2;
+			}
+			char *expectedOffsetStr = malloc(st.st_size);
+			int _ = read(fd, expectedOffsetStr, st.st_size);
+			expectedOffsetStr[st.st_size-1] = 0; // Remove trailing newline by replacing it with a null byte.
+			close(fd);
+
+			char path_1[PATH_MAX];
+			char path_2[PATH_MAX];
+			snprintf(path_1, PATH_MAX, "tests/%s/1.raw", entry->d_name);
+			snprintf(path_2, PATH_MAX, "tests/%s/2.raw", entry->d_name);
+
+			size_t index = find_offset_in_files(path_1, path_2, algos[algo_idx]);
+			float offset = (float)index / 48000;
+			printf("Test \x1b[0;32m|%20s|\x1b[0m expected: %s, got: %f\n", entry->d_name, expectedOffsetStr, offset);
+
+			free(expectedOffsetStr);
 		}
-		char *expectedOffsetStr = malloc(st.st_size);
-		int _ = read(fd, expectedOffsetStr, st.st_size);
-		expectedOffsetStr[st.st_size-1] = 0; // Remove trailing newline by replacing it with a null byte.
-		close(fd);
-
-		char path_1[PATH_MAX];
-		char path_2[PATH_MAX];
-		snprintf(path_1, PATH_MAX, "tests/%s/1.raw", entry->d_name);
-		snprintf(path_2, PATH_MAX, "tests/%s/2.raw", entry->d_name);
-
-		//printf("Test \x1b[0;32m%s\x1b[0m expected: %s, got: %s\n", entry->d_name, expectedOffsetStr, "TEMP");
-		find_offset_in_files(path_1, path_2);
-
-		free(expectedOffsetStr);
 	}
 }
