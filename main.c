@@ -148,6 +148,40 @@ size_t find_offset_zero_crossings(float *audio_1, size_t audio_1_sample_count, f
 	return index;
 }
 
+size_t temporary(float *audio_1, size_t audio_1_sample_count, float *audio_2, size_t audio_2_sample_count) {
+	float *out = malloc(audio_1_sample_count * sizeof(float));
+	compute_hpf(audio_1, audio_1_sample_count, 20, 44100);
+	compute_lpf(audio_1, audio_1_sample_count, 40, 44100);
+	compute_lpf(audio_1, audio_1_sample_count, 40, 44100);
+
+#define N 8192
+	for (int i = 0; i < audio_1_sample_count - audio_2_sample_count; i += N) {
+		float zcr = 0;
+		float last_sample = audio_1[i];
+		for (int j = 1; j < N; j++) {
+			float sample = audio_1[i+j];
+			float score = fabs(sin(sample) - sin(last_sample)) / 2;
+			last_sample = sample;
+			zcr += score;
+		}
+
+		zcr /= N;
+		printf("%f\n", zcr);
+
+		for (int j = 0; j < N; j++) {
+			out[i+j] = zcr;
+		}
+	}
+
+	compute_auto_scale(out, audio_1_sample_count - audio_2_sample_count);
+	for (int i = 0; i < audio_1_sample_count; i++) {
+		int _ = write(1, &out[i], sizeof(float));
+	}
+
+	free(out);
+	return 0;
+}
+
 size_t find_offset_correlation(float *audio_1, size_t audio_1_sample_count, float *audio_2, size_t audio_2_sample_count) {
 	float *out = malloc(audio_1_sample_count * sizeof(float));
 
@@ -274,13 +308,13 @@ int main() {
 	//find_offset_in_files("tests/orig_piano_pc/2.raw", "tests/orig_piano_pc/1.raw");
 	//return 0;
 
-	Algorithm algos[] = {find_offset_correlation, find_offset_correlation_hpf, find_offset_correlation_volume_normalized, find_offset_correlation_on_derivatives, find_offset_zero_crossings};
+	Algorithm algos[] = {temporary, find_offset_correlation, find_offset_correlation_hpf, find_offset_correlation_volume_normalized, find_offset_correlation_on_derivatives, find_offset_zero_crossings};
 	int algos_len = sizeof(algos) / sizeof(algos[0]);
 
-	char *algo_names[] = {"Correlation", "Correlation (HPF @ 20hz)", "Correlation (volume normalized)", "Correlation on derivatives", "Zero-crossings"};
+	char *algo_names[] = {"temporary", "Correlation", "Correlation (HPF @ 20hz)", "Correlation (volume normalized)", "Correlation on derivatives", "Zero-crossings"};
 
 	for (int algo_idx = 0; algo_idx < algos_len; algo_idx++) {
-		printf("%s:\n", algo_names[algo_idx]);
+		fprintf(stderr, "%s:\n", algo_names[algo_idx]);
 
 		DIR *dir;
 		struct dirent *entry;
@@ -314,11 +348,15 @@ int main() {
 			snprintf(path_1, PATH_MAX, "tests/%s/1.raw", entry->d_name);
 			snprintf(path_2, PATH_MAX, "tests/%s/2.raw", entry->d_name);
 
+			if (memcmp(path_1, "tests/temp/1.raw", 16) != 0) continue;
+
 			size_t index = find_offset_in_files(path_1, path_2, algos[algo_idx]);
 			float offset = (float)index / 48000;
-			printf("Test \x1b[0;32m|%20s|\x1b[0m expected: %s, got: %f\n", entry->d_name, expectedOffsetStr, offset);
+			fprintf(stderr, "Test \x1b[0;32m|%20s|\x1b[0m expected: %s, got: %f\n", entry->d_name, expectedOffsetStr, offset);
 
 			free(expectedOffsetStr);
+			break; // DEBUGGING
 		}
+		break; // DEBUGGING
 	}
 }
