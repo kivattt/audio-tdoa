@@ -56,13 +56,7 @@ def correlate_two_fft_chunks(fft1, fft2):
 #
 # Or, maybe we could start high at like 100ms chunk size, trusting that to be an accurate but rough result,
 # then lowering the chunk size to get better time resolution (only looking within a certain area of the certain 100ms result)
-#def find_offset_fft(audio_1, audio_2, samplerate):
-def find_offset_fft(sample_freq1: int, data1: np.ndarray, sample_freq2: int, data2: np.ndarray):
-    assert sample_freq1 == sample_freq2
-    audio_1 = data1
-    audio_2 = data2
-    samplerate = sample_freq1
-
+def find_offset_fft(audio_1, audio_2, samplerate):
     audio_1_fft_chunks = []
     audio_2_fft_chunks = []
 
