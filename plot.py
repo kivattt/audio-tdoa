@@ -44,9 +44,6 @@ with open(output_correlation_file, 'rb') as f:
             correlation = correlation,
         ))
 
-        if test_name_str == "window_banging":
-            correlation.tofile("correlation_gcc.raw")
-
 for test_name, correlation_list in correlations.items():
     #fig, axes = plt.subplots(nrows=len(correlation_list), ncols=1, figsize=(8,4.5*len(correlation_list)), squeeze=False)
     fig, axes = plt.subplots(nrows=len(correlation_list), ncols=1, figsize=(8,3*len(correlation_list)), squeeze=False)

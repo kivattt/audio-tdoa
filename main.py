@@ -213,6 +213,7 @@ def find_offset_polarity(audio_1, audio_2, samplerate):
     sign_2 = np.sign(audio_2)
     #correlation = fftconvolve(sign_1, sign_2[::-1], mode='valid')[:out_len]
     correlation = fftconvolve(sign_1, sign_2[::-1], mode='valid')[:out_len+1]
+    correlation = np.abs(correlation) # KIVA KIVA KIVA
     offset_seconds = np.argmax(correlation) / samplerate
     return offset_seconds, correlation
 
@@ -223,7 +224,7 @@ def find_offset_correlate_mul_polarity(audio_1, audio_2, samplerate):
     cc3 = cc1 * cc2
     ans3 = np.argmax(cc3)
 
-    return ans3 / samplerate, cc3
+    return ans3 / samplerate, np.abs(cc3)
 
 def diff_color_background(diff_value):
     redness = abs(diff_value)
