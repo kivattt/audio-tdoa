@@ -219,6 +219,10 @@ def find_offset_polarity(audio_1, audio_2, samplerate):
     return offset_seconds, correlation
 
 def find_offset_correlate_mul_polarity(audio_1, audio_2, samplerate):
+    sos = signal.butter(N=2, Wn=10, btype="highpass", fs=samplerate, output="sos")
+    audio_1 = signal.sosfiltfilt(sos, audio_1, padtype=None)
+    audio_2 = signal.sosfiltfilt(sos, audio_2, padtype=None)
+
     ans1, cc1 = find_offset_correlate(audio_1, audio_2, samplerate)
     ans2, cc2 = find_offset_polarity(audio_1, audio_2, samplerate)
 
@@ -255,30 +259,38 @@ def append_data(algorithm_str, test_name_str, samplerate, calculated_offset, cor
         f.write(correlation_len_bytes)
         f.write(correlation.astype(np.float32))
 
-# Delete the output correlation file
+do_write = False
 if os.path.exists(output_correlation_file):
     confirmation = input("\x1b[0;31mOverwrite " + output_correlation_file + " ? (y/N): \x1b[0m")
     if confirmation == "y" or confirmation == "Y":
         print("\x1b[0;33mOverwriting " + output_correlation_file + " ...\x1b[0m")
+        # Delete the output correlation file
         os.remove(output_correlation_file)
-    else:
-        sys.exit(0)
+        do_write = True
 else:
     print("\x1b[0;33mWriting plot data to " + output_correlation_file + " ...\x1b[0m")
+    do_write = True
 
 #algos = [find_offset_correlate, find_offset_fft, find_offset_lrms, find_offset_gccphat_4]
 #algos_names = ["Correlation", "FFT Correlation", "Least RMS", "GCC PHAT"]
 #algos = [find_offset_correlate, find_offset_ssd, find_offset_envelope, find_offset_polarity]
 #algos_names = ["Correlation", "SSD", "Envelope", "Polarity"]
-algos = [find_offset_correlate, find_offset_polarity, find_offset_correlate_mul_polarity]
-algos_names = ["Correlation", "Polarity", "Correlation * Polarity"]
+algos = [find_offset_correlate, find_offset_correlate_mul_polarity]
+algos_names = ["Correlation", "Correlation * Polarity"]
+
+def output_and_return(string):
+    print(string, end="")
+    return string
+
+output_list = []
 
 i = 0
 for algo in algos:
     algoName = algos_names[i]
     i += 1
 
-    print("\x1b[34m" + algoName + "\x1b[0m")
+    string = output_and_return("\x1b[34m" + algoName + "\x1b[0m\n")
+    output_list.append(string)
 
     for directory in os.listdir(tests_folder):
         expected_file = os.path.join(tests_folder, directory, "expected_offset_seconds.txt")
@@ -291,7 +303,30 @@ for algo in algos:
 
         diff = calculated_offset - float(expected_offset)
 
-        print("Test \x1b[0;32m" + directory.rjust(20, ' ') + "\x1b[0m expected: " + str(expected_offset).ljust(8, ' ') + ", got: " + str(calculated_offset).ljust(17,' '), ", diff: " + diff_color_background(diff) + str(diff) + "\x1b[0m")
+        string = output_and_return("Test \x1b[0;32m" + directory.rjust(20, ' ') + "\x1b[0m expected: " + str(expected_offset).ljust(8, ' ') + ", got: " + str(calculated_offset).ljust(17,' ') + ", diff: " + diff_color_background(diff) + str(diff) + "\x1b[0m\n")
+        output_list.append(string)
 
         # Append data to the output correlation file
-        append_data(algoName, directory, samplerate, calculated_offset, correlation)
+        if do_write:
+            append_data(algoName, directory, samplerate, calculated_offset, correlation)
+
+if do_write and len(output_list) > 0:
+    with open(output_correlation_file, "rb") as f:
+        existing_binary_data = f.read()
+
+    # Prepend the output correlation file with the output list
+    with open(output_correlation_file, "rb+") as f:
+        f.seek(0, 0)
+        f.write("OUTPUT_IS_HERE".encode("utf-8"))
+
+        output_len = 0
+        for line in output_list:
+            output_len += len(line.encode("utf-8"))
+
+        output_len_bytes = output_len.to_bytes(8, byteorder='little', signed=False)
+        f.write(output_len_bytes)
+
+        for line in output_list:
+            f.write(line.encode("utf-8"))
+
+        f.write(existing_binary_data)
