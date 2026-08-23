@@ -1,6 +1,7 @@
 # 2.wav is always shorter than 1.wav
 # smaller file within larger file correlated from different microphones
 import os
+import sys
 import warnings
 import scipy.io.wavfile as wavfile
 from scipy import signal
@@ -256,7 +257,14 @@ def append_data(algorithm_str, test_name_str, samplerate, calculated_offset, cor
 
 # Delete the output correlation file
 if os.path.exists(output_correlation_file):
-    os.remove(output_correlation_file)
+    confirmation = input("\x1b[0;31mOverwrite " + output_correlation_file + " ? (y/N): \x1b[0m")
+    if confirmation == "y" or confirmation == "Y":
+        print("\x1b[0;33mOverwriting " + output_correlation_file + " ...\x1b[0m")
+        os.remove(output_correlation_file)
+    else:
+        sys.exit(0)
+else:
+    print("\x1b[0;33mWriting plot data to " + output_correlation_file + " ...\x1b[0m")
 
 #algos = [find_offset_correlate, find_offset_fft, find_offset_lrms, find_offset_gccphat_4]
 #algos_names = ["Correlation", "FFT Correlation", "Least RMS", "GCC PHAT"]
