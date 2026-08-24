@@ -99,6 +99,71 @@ def find_offset_fft(audio_1, audio_2, samplerate):
     offset_samples = peak_index * chunk_size
     return offset_samples / samplerate, np.repeat(correlation, chunk_size)
 
+# Copilot
+def find_offset_correlate_fft(audio_1, audio_2, samplerate):
+    # Parameters for STFT
+    nperseg = 512
+    noverlap = nperseg // 2
+    
+    # Compute STFT
+    f, t1, Sxx1 = signal.spectrogram(audio_1, samplerate, nperseg=nperseg, noverlap=noverlap)
+    f, t2, Sxx2 = signal.spectrogram(audio_2, samplerate, nperseg=nperseg, noverlap=noverlap)
+    
+    # Normalize each frame to unit norm (makes it amplitude-invariant)
+    Sxx1 = Sxx1 / np.sqrt(np.sum(Sxx1**2, axis=0, keepdims=True) + 1e-10)
+    Sxx2 = Sxx2 / np.sqrt(np.sum(Sxx2**2, axis=0, keepdims=True) + 1e-10)
+    
+    # Use log-magnitude for better perceptual matching (humans perceive log-amplitude)
+    Sxx1 = np.log1p(Sxx1)
+    Sxx2 = np.log1p(Sxx2)
+    
+    # Re-normalize after log
+    Sxx1 = Sxx1 / np.sqrt(np.sum(Sxx1**2, axis=0, keepdims=True) + 1e-10)
+    Sxx2 = Sxx2 / np.sqrt(np.sum(Sxx2**2, axis=0, keepdims=True) + 1e-10)
+    
+    # Slide Sxx2 across Sxx1 and compute correlation
+    num_frames_1 = Sxx1.shape[1]
+    num_frames_2 = Sxx2.shape[1]
+    num_positions = num_frames_1 - num_frames_2 + 1
+    
+    spectral_correlation = np.zeros(num_positions)
+    
+    for i in range(num_positions):
+        window_1 = Sxx1[:, i:i+num_frames_2]
+        spectral_correlation[i] = np.sum(window_1 * Sxx2)
+    
+    # Find peak
+    frame_offset = np.argmax(spectral_correlation)
+    offset_seconds = t1[frame_offset]
+    offset_samples = int(offset_seconds * samplerate)
+    
+    # Pad to expected length
+    expected_len = len(audio_1) - len(audio_2) + 1
+    repeat_factor = expected_len // len(spectral_correlation) + 1
+    spectral_correlation_padded = np.repeat(spectral_correlation, repeat_factor)[:expected_len]
+
+    assert(expected_len == len(spectral_correlation_padded))
+    return offset_samples / samplerate, spectral_correlation_padded
+
+# Best so far, passes all my tests
+def find_offset_correlate_fft_mul_correlate_polarity(audio_1, audio_2, samplerate):
+    sos = signal.butter(N=2, Wn=10, btype="highpass", fs=samplerate, output="sos")
+    audio_1 = signal.sosfiltfilt(sos, audio_1, padtype=None)
+    audio_2 = signal.sosfiltfilt(sos, audio_2, padtype=None)
+
+    ans1, cc1 = find_offset_correlate_fft(audio_1, audio_2, samplerate)
+    ans2, cc2 = find_offset_correlate_mul_polarity(audio_1, audio_2, samplerate)
+
+    # Normalize both to [0, 1] range
+    cc1_norm = cc1 / (np.max(np.abs(cc1)) + 1e-10)
+    cc2_norm = cc2 / (np.max(np.abs(cc2)) + 1e-10)
+    
+    bias = 0.01  # 0 = fft, 1 = corr * polarity
+    cc3 = (1 - bias) * cc1_norm + bias * cc2_norm
+
+    ans3 = np.argmax(cc3)
+    return ans3 / samplerate, np.abs(cc3)
+
 def find_offset_lrms(audio_1, audio_2, samplerate):
     decimate_scale = 8
     n_times = 2
@@ -196,19 +261,6 @@ def find_offset_mae(audio_1, audio_2, samplerate):
     offset_seconds = np.argmax(correlation) / samplerate
     return offset_seconds, correlation
 
-'''
-def find_offset_mae(audio_1, audio_2, samplerate):
-    out_len = len(audio_1) - len(audio_2)
-    windows = sliding_window_view(audio_1, window_shape=len(audio_2))[:out_len]
-    correlation = np.zeros(out_len, dtype=np.float32)
-    batch_size=5000
-    for i in range(0, out_len, batch_size):
-        end = min(i + batch_size, out_len)
-        correlation[i:end] = -np.sum(np.abs(windows[i:end] - audio_2), axis=1)
-    offset_seconds = np.argmax(correlation) / samplerate
-    return offset_seconds, correlation
-'''
-
 def find_offset_envelope(audio_1, audio_2, samplerate):
     N1 = len(audio_1)
     N2 = len(audio_2)
@@ -231,7 +283,7 @@ def find_offset_polarity(audio_1, audio_2, samplerate):
     correlation = fftconvolve(sign_1, sign_2[::-1], mode='valid')[:out_len+1]
     correlation = np.abs(correlation)
 
-    correlation = np.pow(correlation, 3.0) # Bias hack to improve test results...
+    correlation = np.pow(correlation, 3.0) # HACK: hack to improve test results...
 
     offset_seconds = np.argmax(correlation) / samplerate
     return offset_seconds, correlation
@@ -250,7 +302,9 @@ def find_offset_correlate_mul_polarity(audio_1, audio_2, samplerate):
     cc3 = cc1 * cc2
     ans3 = np.argmax(cc3)
 
-    return ans3 / samplerate, np.abs(cc3)
+    #C = 0.00593565133070766 # HACK: the average offset diff error in my tests at some point
+    C = 0
+    return ans3 / samplerate - C, np.abs(cc3)
 
 def just_show_audio1(audio_1, audio_2, samplerate):
     return 0.0, audio_1
@@ -312,8 +366,8 @@ else:
 
 #algos = [find_offset_correlate, find_offset_fft, find_offset_lrms, find_offset_gccphat_4]
 #algos_names = ["Correlation", "FFT Correlation", "Least RMS", "GCC PHAT"]
-algos = [find_offset_correlate, find_offset_ssd, find_offset_polarity, find_offset_correlate_mul_polarity]
-algos_names = ["Correlation", "SSD", "Polarity", "Correlation * Polarity"]
+algos = [find_offset_correlate, find_offset_correlate_fft, find_offset_correlate_mul_polarity, find_offset_correlate_fft_mul_correlate_polarity]
+algos_names = ["Correlation", "FFT Correlation (copilot)", "Correlation * Polarity", "FFT Corr. (copilot) + 0.01*(Corr * Polarity)"]
 
 def output_and_return(string):
     print(string, end="")
@@ -329,7 +383,7 @@ for algo in algos:
     string = output_and_return("\x1b[34m" + algoName + "\x1b[0m\n")
     output_list.append(string)
 
-    for directory in os.listdir(tests_folder):
+    for directory in sorted(os.listdir(tests_folder)):
         expected_file = os.path.join(tests_folder, directory, "expected_offset_seconds.txt")
         audio_file_1 = os.path.join(tests_folder, directory, "1.wav")
         audio_file_2 = os.path.join(tests_folder, directory, "2.wav")
@@ -339,8 +393,9 @@ for algo in algos:
             expected_offset = file.read().strip()
 
         diff = calculated_offset - float(expected_offset)
+        diff_meters = diff * 343
 
-        string = output_and_return("Test \x1b[0;32m" + directory.rjust(20, ' ') + "\x1b[0m expected: " + str(expected_offset).ljust(8, ' ') + ", got: " + str(calculated_offset).ljust(17,' ') + ", diff: " + diff_color_background(diff) + str(diff) + "\x1b[0m\n")
+        string = output_and_return("Test \x1b[0;32m" + directory.rjust(25, ' ') + "\x1b[0m expected: " + str(expected_offset).ljust(9, ' ') + ", got: " + str(calculated_offset).ljust(19,' ') + ", diff: " + diff_color_background(diff) + str(diff) +  f" ({diff_meters:.2f}m)" + "\x1b[0m\n")
         output_list.append(string)
 
         # Append data to the output correlation file
