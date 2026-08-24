@@ -7,6 +7,7 @@ import scipy.io.wavfile as wavfile
 from scipy import signal
 from scipy import fft
 import numpy as np
+from numba import njit
 
 from numpy.lib.stride_tricks import sliding_window_view
 from scipy.signal import hilbert
@@ -183,6 +184,19 @@ def find_offset_ssd(audio_1, audio_2, samplerate):
     offset_seconds = np.argmax(correlation) / samplerate
     return offset_seconds, correlation
 
+@njit
+def compute_mae_numba(audio_1, audio_2):
+    out_len = len(audio_1) - len(audio_2)
+    correlation = np.zeros(out_len, dtype=np.float32)
+    for i in range(out_len):
+        correlation[i] = -np.sum(np.abs(audio_1[i:i+len(audio_2)] - audio_2))
+    return correlation
+def find_offset_mae(audio_1, audio_2, samplerate):
+    correlation = compute_mae_numba(audio_1, audio_2)
+    offset_seconds = np.argmax(correlation) / samplerate
+    return offset_seconds, correlation
+
+'''
 def find_offset_mae(audio_1, audio_2, samplerate):
     out_len = len(audio_1) - len(audio_2)
     windows = sliding_window_view(audio_1, window_shape=len(audio_2))[:out_len]
@@ -193,6 +207,7 @@ def find_offset_mae(audio_1, audio_2, samplerate):
         correlation[i:end] = -np.sum(np.abs(windows[i:end] - audio_2), axis=1)
     offset_seconds = np.argmax(correlation) / samplerate
     return offset_seconds, correlation
+'''
 
 def find_offset_envelope(audio_1, audio_2, samplerate):
     N1 = len(audio_1)
@@ -214,7 +229,10 @@ def find_offset_polarity(audio_1, audio_2, samplerate):
     sign_2 = np.sign(audio_2)
     #correlation = fftconvolve(sign_1, sign_2[::-1], mode='valid')[:out_len]
     correlation = fftconvolve(sign_1, sign_2[::-1], mode='valid')[:out_len+1]
-    correlation = np.abs(correlation) # KIVA KIVA KIVA
+    correlation = np.abs(correlation)
+
+    correlation = np.pow(correlation, 3.0) # Bias hack to improve test results...
+
     offset_seconds = np.argmax(correlation) / samplerate
     return offset_seconds, correlation
 
@@ -226,10 +244,31 @@ def find_offset_correlate_mul_polarity(audio_1, audio_2, samplerate):
     ans1, cc1 = find_offset_correlate(audio_1, audio_2, samplerate)
     ans2, cc2 = find_offset_polarity(audio_1, audio_2, samplerate)
 
+    #cc2 = np.sqrt(cc2)
+    #cc2 = 1.0 + np.multiply(0.01, cc2)
+
     cc3 = cc1 * cc2
     ans3 = np.argmax(cc3)
 
     return ans3 / samplerate, np.abs(cc3)
+
+def just_show_audio1(audio_1, audio_2, samplerate):
+    return 0.0, audio_1
+
+def just_show_audio2(audio_1, audio_2, samplerate):
+    return 0.0, audio_2
+
+def show_mul_at_calculated_correlate_offset(audio_1, audio_2, samplerate):
+    #offset_sec, _ = find_offset_correlate_mul_polarity(audio_1, audio_2, samplerate)
+    offset_sec, _ = find_offset_correlate(audio_1, audio_2, samplerate)
+    offset = int(offset_sec * samplerate)
+    clip_1 = audio_1[offset:offset+len(audio_2)]
+    clip_2 = audio_2
+    clip_1 = clip_1 / np.sqrt(np.sum(clip_1 **2))
+    clip_2 = clip_2 / np.sqrt(np.sum(clip_2 **2))
+    mul = clip_1 * clip_2
+    mul = np.abs(mul)
+    return offset_sec, mul
 
 def diff_color_background(diff_value):
     redness = abs(diff_value)
@@ -273,10 +312,8 @@ else:
 
 #algos = [find_offset_correlate, find_offset_fft, find_offset_lrms, find_offset_gccphat_4]
 #algos_names = ["Correlation", "FFT Correlation", "Least RMS", "GCC PHAT"]
-#algos = [find_offset_correlate, find_offset_ssd, find_offset_envelope, find_offset_polarity]
-#algos_names = ["Correlation", "SSD", "Envelope", "Polarity"]
-algos = [find_offset_correlate, find_offset_correlate_mul_polarity]
-algos_names = ["Correlation", "Correlation * Polarity"]
+algos = [find_offset_correlate, find_offset_ssd, find_offset_polarity, find_offset_correlate_mul_polarity]
+algos_names = ["Correlation", "SSD", "Polarity", "Correlation * Polarity"]
 
 def output_and_return(string):
     print(string, end="")
