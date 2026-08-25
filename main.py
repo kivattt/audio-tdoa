@@ -106,9 +106,9 @@ def find_offset_correlate_fft(audio_1, audio_2, samplerate):
     noverlap = nperseg // 2
     
     # Compute STFT
-    f, t1, Sxx1 = signal.spectrogram(audio_1, samplerate, nperseg=nperseg, noverlap=noverlap)
-    f, t2, Sxx2 = signal.spectrogram(audio_2, samplerate, nperseg=nperseg, noverlap=noverlap)
-    
+    f1, t1, Sxx1 = signal.spectrogram(audio_1, samplerate, nperseg=nperseg, noverlap=noverlap)
+    f2, t2, Sxx2 = signal.spectrogram(audio_2, samplerate, nperseg=nperseg, noverlap=noverlap)
+
     # Normalize each frame to unit norm (makes it amplitude-invariant)
     Sxx1 = Sxx1 / np.sqrt(np.sum(Sxx1**2, axis=0, keepdims=True) + 1e-10)
     Sxx2 = Sxx2 / np.sqrt(np.sum(Sxx2**2, axis=0, keepdims=True) + 1e-10)
@@ -146,7 +146,7 @@ def find_offset_correlate_fft(audio_1, audio_2, samplerate):
     return offset_samples / samplerate, spectral_correlation_padded
 
 # Best so far, passes all my tests
-def find_offset_correlate_fft_mul_correlate_polarity(audio_1, audio_2, samplerate):
+def find_offset_hybrid(audio_1, audio_2, samplerate):
     sos = signal.butter(N=2, Wn=10, btype="highpass", fs=samplerate, output="sos")
     audio_1 = signal.sosfiltfilt(sos, audio_1, padtype=None)
     audio_2 = signal.sosfiltfilt(sos, audio_2, padtype=None)
@@ -366,7 +366,7 @@ else:
 
 #algos = [find_offset_correlate, find_offset_fft, find_offset_lrms, find_offset_gccphat_4]
 #algos_names = ["Correlation", "FFT Correlation", "Least RMS", "GCC PHAT"]
-algos = [find_offset_correlate, find_offset_correlate_fft, find_offset_correlate_mul_polarity, find_offset_correlate_fft_mul_correlate_polarity]
+algos = [find_offset_correlate, find_offset_correlate_fft, find_offset_correlate_mul_polarity, find_offset_hybrid]
 algos_names = ["Correlation", "FFT Correlation (copilot)", "Correlation * Polarity", "FFT Corr. (copilot) + 0.01*(Corr * Polarity)"]
 
 def output_and_return(string):
