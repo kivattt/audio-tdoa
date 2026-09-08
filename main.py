@@ -159,27 +159,16 @@ def find_offset_correlate_fft2(audio_1, audio_2, samplerate):
     nperseg = 512
     noverlap = nperseg * 0.75
 
-    start = time.time()
     # Compute spectrogram magnitudes (centers of windows -> t arrays are frame-center times)
     _, t1, S1 = signal.spectrogram(audio_1, samplerate, nperseg=nperseg, noverlap=noverlap, mode='magnitude')
     _, _, S2 = signal.spectrogram(audio_2, samplerate, nperseg=nperseg, noverlap=noverlap, mode='magnitude')
-    duration = time.time() - start
-    print("Section 1:", duration, "s")
-    print("S1.shape =", S1.shape)
-    print("S2.shape =", S2.shape)
 
-    # Preprocessing: frame-wise normalization, log-magnitude, re-normalize (as you had)
     def preprocess(S):
-        S = S / np.sqrt(np.sum(S**2, axis=0, keepdims=True) + 1e-10)
-        S = np.log1p(S)
         S = S / np.sqrt(np.sum(S**2, axis=0, keepdims=True) + 1e-10)
         return S
 
-    start = time.time()
     S1 = preprocess(S1)
     S2 = preprocess(S2)
-    duration = time.time() - start
-    print("Section 2:", duration, "s")
 
     F, N1 = S1.shape
     _, N2 = S2.shape
@@ -200,31 +189,25 @@ def find_offset_correlate_fft2(audio_1, audio_2, samplerate):
     A_pad[:, :N1] = S1
     B_pad[:, :N2] = B_rev  # note: B_rev already reversed along its time axis
 
-    start = time.time()
-    # Batch rFFT along time axis for each frequency bin
-    print("n =", L)
-    FA = np.fft.rfft(A_pad, n=L, axis=1)
-    FB = np.fft.rfft(B_pad, n=L, axis=1)
-    duration = time.time() - start
-    print("Section 3:", duration, "s")
+    A_pad = np.ascontiguousarray(A_pad)
+    B_pad = np.ascontiguousarray(B_pad)
+
+    # scipy rfft
+    n_workers = max(1, os.cpu_count())
+    FA = fft.rfft(A_pad, n=L, axis=1, workers=n_workers)
+    FB = fft.rfft(B_pad, n=L, axis=1, workers=n_workers)
 
     # Multiply per-frequency, sum across frequencies in frequency-domain, inverse rfft once
-    start = time.time()
     prod_sum = np.sum(FA * FB, axis=0)          # shape (L_rfft,)
     conv_all = np.fft.irfft(prod_sum, n=L)     # length L (>= conv_len)
-    duration = time.time() - start
-    print("Section 4:", duration, "s")
 
     # valid positions for sliding-correlation correspond to indices [N2-1 ... N1-1]
     start_idx = N2 - 1
     end_idx = N1  # python slice exclusive
     spectral_correlation = conv_all[start_idx:end_idx]  # length num_positions
 
-    start = time.time()
     i_peak = np.argmax(spectral_correlation)
     coarse_offset_samples = t1[i_peak] * samplerate
-    duration = time.time() - start
-    print("Section 5:", duration, "s")
 
     # Normal time-domain correlation around the coarse estimate
     def correlation(audio_1, audio_2, center, samplerate):
@@ -240,20 +223,14 @@ def find_offset_correlate_fft2(audio_1, audio_2, samplerate):
 
         return samples_peak_index, corr
 
-    start = time.time()
     center = coarse_offset_samples
     final_offset_samples, correlation = correlation(audio_1, audio_2, center, samplerate)
-    duration = time.time() - start
-    print("Section 6:", duration, "s")
 
-    start = time.time()
     offset_samples_int = int(round(final_offset_samples))
     expected_len = max(1, len(audio_1) - len(audio_2) + 1)
     repeat_factor = max(1, expected_len // len(spectral_correlation) + 1)
     spectral_correlation_padded = np.repeat(spectral_correlation, repeat_factor)[:expected_len]
     spectral_correlation_padded = np.pad(spectral_correlation_padded, (0, len(audio_2)))
-    duration = time.time() - start
-    print("Section 7:", duration, "s")
 
     do_plot = False
     if do_plot:
