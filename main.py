@@ -2,6 +2,7 @@
 # smaller file within larger file correlated from different microphones
 import os
 import sys
+import time
 import warnings
 import scipy.io.wavfile as wavfile
 from scipy import signal
@@ -102,7 +103,7 @@ def find_offset_fft(audio_1, audio_2, samplerate):
 # Copilot
 def find_offset_correlate_fft(audio_1, audio_2, samplerate):
     # Parameters for STFT
-    nperseg = 512
+    nperseg = 1024
     noverlap = nperseg // 2
     
     # Compute STFT
@@ -144,6 +145,96 @@ def find_offset_correlate_fft(audio_1, audio_2, samplerate):
 
     assert(expected_len == len(spectral_correlation_padded))
     return offset_samples / samplerate, spectral_correlation_padded
+
+# Copilot
+def find_offset_correlate_fft2(audio_1, audio_2, samplerate):
+    # This algorithm requires both samplerates to be identical.
+    # If they aren't, one of the audio clips needs oversampling/downsampling to match
+    audio_1 = np.asarray(audio_1, dtype=np.float32)
+    audio_2 = np.asarray(audio_2, dtype=np.float32)
+
+    # Parameters for STFT
+    nperseg = 512
+    noverlap = nperseg * 0.75
+
+    # Compute spectrogram magnitudes (centers of windows -> t arrays are frame-center times)
+    _, t1, S1 = signal.spectrogram(audio_1, samplerate, nperseg=nperseg, noverlap=noverlap, mode='magnitude')
+    _, _, S2 = signal.spectrogram(audio_2, samplerate, nperseg=nperseg, noverlap=noverlap, mode='magnitude')
+
+    # Preprocessing: frame-wise normalization, log-magnitude, re-normalize (as you had)
+    def preprocess(S):
+        S = S / np.sqrt(np.sum(S**2, axis=0, keepdims=True) + 1e-10)
+        S = np.log1p(S)
+        S = S / np.sqrt(np.sum(S**2, axis=0, keepdims=True) + 1e-10)
+        return S
+
+    S1 = preprocess(S1)
+    S2 = preprocess(S2)
+
+    F, N1 = S1.shape
+    _, N2 = S2.shape
+    num_positions = N1 - N2 + 1
+    assert num_positions > 0
+
+    # Prepare reversed template across frequency axis
+    B_rev = S2[:, ::-1]   # shape (F, N2)
+
+    # FFT-based convolution across frequency bins:
+    conv_len = N1 + N2 - 1
+    # Use next power of two for speed (optional but often faster)
+    L = 1 << int(np.ceil(np.log2(conv_len)))
+
+    # Zero-pad per-frequency time-series to length L
+    A_pad = np.zeros((F, L), dtype=np.float32)
+    B_pad = np.zeros((F, L), dtype=np.float32)
+    A_pad[:, :N1] = S1
+    B_pad[:, :N2] = B_rev  # note: B_rev already reversed along its time axis
+
+    # Batch rFFT along time axis for each frequency bin
+    FA = np.fft.rfft(A_pad, n=L, axis=1)
+    FB = np.fft.rfft(B_pad, n=L, axis=1)
+
+    # Multiply per-frequency, sum across frequencies in frequency-domain, inverse rfft once
+    prod_sum = np.sum(FA * FB, axis=0)          # shape (L_rfft,)
+    conv_all = np.fft.irfft(prod_sum, n=L)     # length L (>= conv_len)
+
+    # valid positions for sliding-correlation correspond to indices [N2-1 ... N1-1]
+    start_idx = N2 - 1
+    end_idx = N1  # python slice exclusive
+    spectral_correlation = conv_all[start_idx:end_idx]  # length num_positions
+
+    i_peak = np.argmax(spectral_correlation)
+    coarse_offset_samples = t1[i_peak] * samplerate
+
+    # Normal time-domain correlation around the coarse estimate
+    def correlation(audio_1, audio_2, center, samplerate):
+        refine_window_sec = 0.1 # How much around the center we want to time-correlate on
+        half_win = refine_window_sec * samplerate
+
+        seg_start = int(max(0, center - half_win))
+        seg_end = int(min(len(audio_1), center + half_win + len(audio_2))) # ensure seg can contain audio_2
+
+        # use FFT-based correlate for speed on moderate sizes
+        corr = signal.correlate(audio_1[seg_start:seg_end], audio_2, mode='valid', method='fft')
+        samples_peak_index = seg_start + np.argmax(corr)
+
+        return samples_peak_index, corr
+
+    center = coarse_offset_samples
+    final_offset_samples, correlation = correlation(audio_1, audio_2, center, samplerate)
+
+    offset_samples_int = int(round(final_offset_samples))
+    expected_len = max(1, len(audio_1) - len(audio_2) + 1)
+    repeat_factor = max(1, expected_len // len(spectral_correlation) + 1)
+    spectral_correlation_padded = np.repeat(spectral_correlation, repeat_factor)[:expected_len]
+    spectral_correlation_padded = np.pad(spectral_correlation_padded, (0, len(audio_2)))
+
+    do_plot = False
+    if do_plot:
+        #plt.plot(correlation) # Normal time-domain correlation (centered around `center` variable)
+        self.plot_it(data1, spectral_correlation_padded, offset_samples_int) # Frequency domain correlation
+
+    return final_offset_samples / samplerate, spectral_correlation_padded
 
 # Best so far, passes all my tests
 def find_offset_hybrid(audio_1, audio_2, samplerate):
@@ -352,6 +443,41 @@ def append_data(algorithm_str, test_name_str, samplerate, calculated_offset, cor
         f.write(correlation_len_bytes)
         f.write(correlation.astype(np.float32))
 
+def benchmark_algorithm(algo, algo_name, samplerate, long_len, short_len):
+    audio_1 = np.random.uniform(-1.0, 1.0, long_len).astype(np.float32)
+    audio_2 = np.random.uniform(-1.0, 1.0, short_len).astype(np.float32)
+
+    start = time.time()
+    algo(audio_1, audio_2, samplerate)
+    duration = time.time() - start
+    algo_name = "\x1b[0;32m" + algo_name + " \x1b[0;37m"
+    print(algo_name.ljust(50, '-') + "\x1b[0m " + str(duration) + "s")
+
+#algos = [find_offset_correlate, find_offset_fft, find_offset_lrms, find_offset_gccphat_4]
+#algos_names = ["Correlation", "FFT Correlation", "Least RMS", "GCC PHAT"]
+algos = [find_offset_correlate, find_offset_correlate_fft, find_offset_correlate_fft2, find_offset_correlate_mul_polarity, find_offset_hybrid]
+algos_names = ["Correlation", "FFT Correlation (copilot)", "fft2", "Correlation * Polarity", "Hybrid"]
+
+do_profiling = True
+if do_profiling:
+    samplerate = 48000
+    long_len = 200 * samplerate # 200 sec
+    short_len = 2 * samplerate # 2 sec
+
+    print("")
+    print("Samplerate: " + str(samplerate))
+    print("Long time: " + str(long_len / samplerate) + "s")
+    print("Short time: " + str(short_len / samplerate) + "s")
+    print("")
+
+    i = 0
+    for algo in algos:
+        algo_name = algos_names[i]
+        benchmark_algorithm(algo, algo_name, samplerate, long_len, short_len)
+
+        i += 1
+    sys.exit(0)
+
 do_write = False
 if os.path.exists(output_correlation_file):
     confirmation = input("\x1b[0;31mOverwrite " + output_correlation_file + " ? (y/N): \x1b[0m")
@@ -363,11 +489,6 @@ if os.path.exists(output_correlation_file):
 else:
     print("\x1b[0;33mWriting plot data to " + output_correlation_file + " ...\x1b[0m")
     do_write = True
-
-#algos = [find_offset_correlate, find_offset_fft, find_offset_lrms, find_offset_gccphat_4]
-#algos_names = ["Correlation", "FFT Correlation", "Least RMS", "GCC PHAT"]
-algos = [find_offset_correlate, find_offset_correlate_fft, find_offset_correlate_mul_polarity, find_offset_hybrid]
-algos_names = ["Correlation", "FFT Correlation (copilot)", "Correlation * Polarity", "FFT Corr. (copilot) + 0.01*(Corr * Polarity)"]
 
 def output_and_return(string):
     print(string, end="")
