@@ -239,6 +239,107 @@ def find_offset_correlate_fft2(audio_1, audio_2, samplerate):
 
     return final_offset_samples / samplerate, spectral_correlation_padded
 
+def find_offset_correlate_fft3(audio_1, audio_2, samplerate):
+    # This algorithm requires both samplerates to be identical.
+    # If they aren't, one of the audio clips needs oversampling/downsampling to match
+    #assert sample_freq1 == sample_freq2
+    #samplerate = sample_freq1
+    #audio_1 = np.asarray(data1, dtype=np.float32)
+    #audio_2 = np.asarray(data2, dtype=np.float32)
+
+    # Parameters for STFT
+    nperseg = 512
+    noverlap = 0 # nperseg * 0.75
+
+    # Compute spectrogram magnitudes (centers of windows -> t arrays are frame-center times)
+    _, t1, S1 = signal.spectrogram(audio_1, samplerate, nperseg=nperseg, noverlap=noverlap, mode='magnitude')
+    _, _, S2 = signal.spectrogram(audio_2, samplerate, nperseg=nperseg, noverlap=noverlap, mode='magnitude')
+
+    def preprocess(S):
+        S = S / np.sqrt(np.sum(S**2, axis=0, keepdims=True) + 1e-10)
+        return S
+
+    S1 = preprocess(S1)
+    S2 = preprocess(S2)
+
+    F, N1 = S1.shape
+    _, N2 = S2.shape
+    num_positions = N1 - N2 + 1
+    assert num_positions > 0
+
+    # Prepare reversed template across frequency axis
+    B_rev = S2[:, ::-1]   # shape (F, N2)
+
+    # FFT-based convolution across frequency bins:
+    conv_len = N1 + N2 - 1
+    # Use next power of two for speed (optional but often faster)
+    L = 1 << int(np.ceil(np.log2(conv_len)))
+
+    # Zero-pad per-frequency time-series to length L
+    A_pad = np.zeros((F, L), dtype=np.float32)
+    B_pad = np.zeros((F, L), dtype=np.float32)
+    A_pad[:, :N1] = S1
+    B_pad[:, :N2] = B_rev  # note: B_rev already reversed along its time axis
+
+    A_pad = np.ascontiguousarray(A_pad)
+    B_pad = np.ascontiguousarray(B_pad)
+
+    # scipy rfft
+    n_workers = max(1, os.cpu_count())
+    FA = fft.rfft(A_pad, n=L, axis=1, workers=n_workers)
+    FB = fft.rfft(B_pad, n=L, axis=1, workers=n_workers)
+
+    # Multiply per-frequency, sum across frequencies in frequency-domain, inverse rfft once
+    prod_sum = np.sum(FA * FB, axis=0)          # shape (L_rfft,)
+    conv_all = np.fft.irfft(prod_sum, n=L)     # length L (>= conv_len)
+
+    # valid positions for sliding-correlation correspond to indices [N2-1 ... N1-1]
+    start_idx = N2 - 1
+    end_idx = N1  # python slice exclusive
+    spectral_correlation = conv_all[start_idx:end_idx]  # length num_positions
+
+    def correlation(audio_1, audio_2, center, samplerate, window_sec=0.2):
+        n1, n2 = len(audio_1), len(audio_2)
+
+        half_win = int(round(window_sec / 2 * samplerate))
+        center = int(round(center))
+
+        # --- Search range for the START position of audio_2 ---
+        # Valid start positions are 0 .. n1 - n2.
+        max_start = n1 - n2
+        start_lo = min(max(0, center - half_win), max_start)
+        start_hi = max(min(max_start, center + half_win), start_lo)
+
+        # The segment must cover every candidate start plus the full length of audio_2.
+        seg_start = start_lo
+        seg_end = start_hi + n2          # <= n1 guaranteed, since start_hi <= n1 - n2
+        seg = audio_1[seg_start:seg_end] # len(seg) >= n2 guaranteed
+
+        # Use FFT-based correlate for speed on moderate sizes
+        corr = signal.correlate(seg, audio_2, mode='valid', method='fft')   # length = start_hi - start_lo + 1
+
+        peak = np.argmax(corr)
+        samples_peak_index = seg_start + int(peak)
+
+        return samples_peak_index, corr
+
+    i_peak = np.argmax(spectral_correlation)
+    coarse_center_samples = t1[i_peak] * samplerate
+    final_offset_samples, correlation = correlation(audio_1, audio_2, coarse_center_samples, samplerate)
+
+    offset_samples_int = int(round(final_offset_samples))
+    expected_len = max(1, len(audio_1) - len(audio_2) + 1)
+    repeat_factor = max(1, expected_len // len(spectral_correlation) + 1)
+    spectral_correlation_padded = np.repeat(spectral_correlation, repeat_factor)[:expected_len]
+    spectral_correlation_padded = np.pad(spectral_correlation_padded, (0, len(audio_2)))
+
+    do_plot = False
+    if do_plot:
+        #plt.plot(correlation) # Normal time-domain correlation (centered around `center` variable)
+        self.plot_it(data1, spectral_correlation_padded, offset_samples_int) # Frequency domain correlation
+
+    return final_offset_samples / samplerate, spectral_correlation_padded
+
 # Best so far, passes all my tests
 def find_offset_hybrid(audio_1, audio_2, samplerate):
     sos = signal.butter(N=2, Wn=10, btype="highpass", fs=samplerate, output="sos")
@@ -468,10 +569,10 @@ def benchmark_algorithm(algo, algo_name, samplerate, long_len, short_len):
 #algos_names = ["Correlation", "FFT Correlation", "Least RMS", "GCC PHAT"]
 #algos = [find_offset_correlate, find_offset_correlate_fft, find_offset_correlate_fft2, find_offset_correlate_mul_polarity, find_offset_hybrid]
 #algos_names = ["Correlation", "FFT Correlation (copilot)", "fft2", "Correlation * Polarity", "Hybrid"]
-algos = [find_offset_correlate_fft2]
-algos_names = ["fft2"]
+algos = [find_offset_correlate_fft2, find_offset_correlate_fft3]
+algos_names = ["fft2", "fft3"]
 
-do_profiling = True
+do_profiling = False
 if do_profiling:
     samplerate = 48000
     long_len = 200 * samplerate # 200 sec
@@ -514,6 +615,8 @@ for algo in algos:
     algoName = algos_names[i]
     i += 1
 
+    diff_sum = 0
+
     string = output_and_return("\x1b[34m" + algoName + "\x1b[0m\n")
     output_list.append(string)
 
@@ -527,6 +630,7 @@ for algo in algos:
             expected_offset = file.read().strip()
 
         diff = calculated_offset - float(expected_offset)
+        diff_sum += abs(diff)
         diff_meters = diff * 343
 
         string = output_and_return("Test \x1b[0;32m" + directory.rjust(25, ' ') + "\x1b[0m expected: " + str(expected_offset).ljust(9, ' ') + ", got: " + str(calculated_offset).ljust(19,' ') + ", diff: " + diff_color_background(diff) + str(diff) +  f" ({diff_meters:.2f}m)" + "\x1b[0m\n")
@@ -535,6 +639,8 @@ for algo in algos:
         # Append data to the output correlation file
         if do_write:
             append_data(algoName, directory, samplerate, calculated_offset, correlation)
+
+    print("DIFF SUM:", diff_sum)
 
 if do_write and len(output_list) > 0:
     with open(output_correlation_file, "rb") as f:
