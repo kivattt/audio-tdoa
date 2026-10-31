@@ -237,7 +237,8 @@ def find_offset_correlate_fft2(audio_1, audio_2, samplerate):
         #plt.plot(correlation) # Normal time-domain correlation (centered around `center` variable)
         self.plot_it(data1, spectral_correlation_padded, offset_samples_int) # Frequency domain correlation
 
-    return final_offset_samples / samplerate, spectral_correlation_padded
+    #return final_offset_samples / samplerate, spectral_correlation_padded
+    return coarse_offset_samples / samplerate, spectral_correlation_padded
 
 def find_offset_correlate_fft3(audio_1, audio_2, samplerate):
     # This algorithm requires both samplerates to be identical.
@@ -324,21 +325,28 @@ def find_offset_correlate_fft3(audio_1, audio_2, samplerate):
         return samples_peak_index, corr
 
     i_peak = np.argmax(spectral_correlation)
-    coarse_center_samples = t1[i_peak] * samplerate
+    #coarse_center_samples = t1[i_peak] * samplerate
+    coarse_center_samples = i_peak * (nperseg - noverlap)
     final_offset_samples, correlation = correlation(audio_1, audio_2, coarse_center_samples, samplerate)
 
-    offset_samples_int = int(round(final_offset_samples))
     expected_len = max(1, len(audio_1) - len(audio_2) + 1)
     repeat_factor = max(1, expected_len // len(spectral_correlation) + 1)
     spectral_correlation_padded = np.repeat(spectral_correlation, repeat_factor)[:expected_len]
     spectral_correlation_padded = np.pad(spectral_correlation_padded, (0, len(audio_2)))
 
+    do_plot_correlation = False
+    if do_plot_correlation:
+        for i in range(len(correlation)):
+            spectral_correlation_padded[i + coarse_center_samples - len(correlation) // 2] = correlation[i]
+
     do_plot = False
     if do_plot:
-        #plt.plot(correlation) # Normal time-domain correlation (centered around `center` variable)
-        self.plot_it(data1, spectral_correlation_padded, offset_samples_int) # Frequency domain correlation
+        #self.plot_it(data1, spectral_correlation_padded, int(round(final_offset_samples))) # Frequency domain correlation
+        self.plot_it(data1, spectral_correlation_padded, int(round(coarse_center_samples))) # Frequency domain correlation
 
-    return final_offset_samples / samplerate, spectral_correlation_padded
+    #return (final_offset_samples - 256) / samplerate, spectral_correlation_padded
+    #return (final_offset_samples) / samplerate, spectral_correlation_padded
+    return (coarse_center_samples) / samplerate, spectral_correlation_padded
 
 # Best so far, passes all my tests
 def find_offset_hybrid(audio_1, audio_2, samplerate):
@@ -569,8 +577,8 @@ def benchmark_algorithm(algo, algo_name, samplerate, long_len, short_len):
 #algos_names = ["Correlation", "FFT Correlation", "Least RMS", "GCC PHAT"]
 #algos = [find_offset_correlate, find_offset_correlate_fft, find_offset_correlate_fft2, find_offset_correlate_mul_polarity, find_offset_hybrid]
 #algos_names = ["Correlation", "FFT Correlation (copilot)", "fft2", "Correlation * Polarity", "Hybrid"]
-algos = [find_offset_correlate_fft2, find_offset_correlate_fft3]
-algos_names = ["fft2", "fft3"]
+algos = [find_offset_correlate_fft3]
+algos_names = ["fft3"]
 
 do_profiling = False
 if do_profiling:
